@@ -172,3 +172,67 @@ export interface PreviewUrlParams {
   contentId: string;
   contentType: 'blog-post' | 'site-page' | 'landing-page';
 }
+
+// Phase 3: Page management and advanced features types
+
+export interface Page {
+  id: string;
+  name: string;
+  slug: string;
+  state: 'DRAFT' | 'PUBLISHED' | 'SCHEDULED';
+  currentState?: 'DRAFT' | 'PUBLISHED' | 'SCHEDULED';
+  htmlTitle?: string;
+  metaDescription?: string;
+  domain?: string;
+  url?: string;
+  absoluteUrl?: string;
+  previewKey?: string;
+  created?: string;
+  updated?: string;
+  publishDate?: string;
+  templatePath?: string;
+  currentlyPublished?: boolean;
+  archivedInDashboard?: boolean;
+  // Nested content structures - handled carefully
+  widgets?: any;
+  widgetContainers?: any;
+  layoutSections?: any;
+}
+
+export interface PageListParams {
+  pageType: 'site-pages' | 'landing-pages';
+  limit?: number;
+  offset?: number;
+  state?: 'DRAFT' | 'PUBLISHED' | 'SCHEDULED';
+  templatePath?: string;
+  domain?: string;
+  name?: string;
+  created?: string;
+  updated?: string;
+  archivedInDashboard?: boolean;
+}
+
+export interface PageUpdateMetadata {
+  name?: string;
+  slug?: string;
+  htmlTitle?: string;
+  metaDescription?: string;
+  // Explicitly exclude nested structures for safety
+}
+
+export interface Template {
+  id: string;
+  path: string;
+  label?: string;
+  type?: string;
+  isAvailableForNewContent?: boolean;
+}
+
+export interface PageCreateParams {
+  name: string;  // Internal name for the page
+  slug: string;  // URL slug
+  templatePath: string;  // Path to template (without leading slash)
+  domain?: string;  // Domain to publish to
+  htmlTitle?: string;  // HTML title tag
+  metaDescription?: string;  // Meta description
+}

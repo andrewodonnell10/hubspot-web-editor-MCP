@@ -335,6 +335,164 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['contentId', 'contentType']
         }
+      },
+      // Phase 3: Page management and advanced features
+      {
+        name: 'hubspot_list_pages',
+        description: 'Discover and list site pages or landing pages with flexible filtering options. Supports filtering by state (DRAFT/PUBLISHED/SCHEDULED), template path, domain, page name, creation date, update date, and archived status. Returns paginated results with metadata. Maximum 100 results per page.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of pages to list (site-pages or landing-pages)'
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of results to return (max 100)',
+              default: 20
+            },
+            offset: {
+              type: 'number',
+              description: 'Number of results to skip for pagination',
+              default: 0
+            },
+            state: {
+              type: 'string',
+              enum: ['DRAFT', 'PUBLISHED', 'SCHEDULED'],
+              description: 'Filter by publication state'
+            },
+            templatePath: {
+              type: 'string',
+              description: 'Filter by template path (e.g., "templates/my-template.html")'
+            },
+            domain: {
+              type: 'string',
+              description: 'Filter by domain'
+            },
+            name: {
+              type: 'string',
+              description: 'Filter by page name/title (partial match supported)'
+            },
+            created: {
+              type: 'string',
+              description: 'Filter pages created after this date (ISO 8601 format)'
+            },
+            updated: {
+              type: 'string',
+              description: 'Filter pages updated after this date (ISO 8601 format)'
+            },
+            archivedInDashboard: {
+              type: 'boolean',
+              description: 'Filter by archived status'
+            }
+          },
+          required: ['pageType']
+        }
+      },
+      {
+        name: 'hubspot_get_page',
+        description: 'Fetch complete details for a specific page. Returns full object including metadata, nested content structures (widgets, layoutSections), and page settings. ⚠️ WARNING: The returned object includes complex nested structures. MUST be called before any update operations to implement the mandatory fetch-first pattern. Handle layoutSections with extreme care - they cannot be partially updated.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page to retrieve'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            }
+          },
+          required: ['pageId', 'pageType']
+        }
+      },
+      {
+        name: 'hubspot_update_page_metadata',
+        description: 'Safely update page metadata WITHOUT touching page content structures. This tool implements the mandatory fetch-first pattern: it fetches the current page state, merges your metadata changes, and PATCHes to the /draft endpoint. CRITICAL SAFETY: NEVER modifies layoutSections, widgets, or widgetContainers to prevent catastrophic data loss. Only updates: name, slug, htmlTitle, metaDescription. All changes go to draft state and require explicit publishing. Perfect for SEO optimization without risking page layouts.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page to update'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            },
+            name: {
+              type: 'string',
+              description: 'Page name/title'
+            },
+            slug: {
+              type: 'string',
+              description: 'URL slug for the page'
+            },
+            htmlTitle: {
+              type: 'string',
+              description: 'HTML title tag content (SEO title)'
+            },
+            metaDescription: {
+              type: 'string',
+              description: 'Meta description for SEO (recommended 150-160 characters)'
+            }
+          },
+          required: ['pageId', 'pageType']
+        }
+      },
+      {
+        name: 'hubspot_list_templates',
+        description: 'Retrieve all available page templates. Returns template paths, labels, and types. Use this to discover available templates before creating new pages. Templates define the structure and layout options for pages.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: []
+        }
+      },
+      {
+        name: 'hubspot_create_page_from_template',
+        description: 'Create a new page from an existing template in DRAFT state. All pages are created as drafts requiring explicit publication. Returns the created page ID and preview URL. IMPORTANT: templatePath must NOT include a leading slash (use "templates/my-template.html" not "/templates/my-template.html"). Perfect for creating landing pages or site pages with AI assistance while maintaining human review.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Internal name/title of the page'
+            },
+            slug: {
+              type: 'string',
+              description: 'URL slug for the page (e.g., "my-new-page" becomes /my-new-page)'
+            },
+            templatePath: {
+              type: 'string',
+              description: 'Path to template WITHOUT leading slash (e.g., "templates/my-template.html")'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page to create (site-pages or landing-pages)',
+              default: 'site-pages'
+            },
+            domain: {
+              type: 'string',
+              description: 'Optional: Domain to publish the page to'
+            },
+            htmlTitle: {
+              type: 'string',
+              description: 'Optional: HTML title tag content (SEO title)'
+            },
+            metaDescription: {
+              type: 'string',
+              description: 'Optional: Meta description for SEO'
+            }
+          },
+          required: ['name', 'slug', 'templatePath']
+        }
       }
     ]
   };
@@ -905,6 +1063,299 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 previewUrl: result.data!.previewUrl,
                 rateLimitStatus: result.rateLimitStatus,
                 message: `✓ Preview URL generated. Review the draft content at: ${result.data!.previewUrl}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      // Phase 3: Page management and advanced features
+      case 'hubspot_list_pages': {
+        if (!toolArgs.pageType) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageType is required');
+        }
+
+        const params: any = {
+          pageType: toolArgs.pageType as 'site-pages' | 'landing-pages',
+          limit: toolArgs.limit as number | undefined,
+          offset: toolArgs.offset as number | undefined,
+          state: toolArgs.state as 'DRAFT' | 'PUBLISHED' | 'SCHEDULED' | undefined,
+          templatePath: toolArgs.templatePath as string | undefined,
+          domain: toolArgs.domain as string | undefined,
+          name: toolArgs.name as string | undefined,
+          created: toolArgs.created as string | undefined,
+          updated: toolArgs.updated as string | undefined,
+          archivedInDashboard: toolArgs.archivedInDashboard as boolean | undefined
+        };
+
+        const result = await hubspotClient.listPages(params);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                total: data.total,
+                count: data.results.length,
+                offset: params.offset || 0,
+                limit: params.limit || 20,
+                pages: data.results.map(page => ({
+                  id: page.id,
+                  name: page.name,
+                  slug: page.slug,
+                  state: page.state,
+                  domain: page.domain,
+                  templatePath: page.templatePath,
+                  publishDate: page.publishDate,
+                  created: page.created,
+                  updated: page.updated,
+                  url: page.url,
+                  metaDescription: page.metaDescription
+                })),
+                rateLimitStatus: result.rateLimitStatus,
+                message: `Found ${data.total} ${params.pageType} matching criteria. Showing ${data.results.length} result(s).`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_get_page': {
+        if (!toolArgs.pageId || !toolArgs.pageType) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId and pageType are required');
+        }
+
+        const result = await hubspotClient.getPage(
+          toolArgs.pageId as string,
+          toolArgs.pageType as 'site-pages' | 'landing-pages'
+        );
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const page = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                page: {
+                  id: page.id,
+                  name: page.name,
+                  slug: page.slug,
+                  state: page.state,
+                  currentState: page.currentState,
+                  htmlTitle: page.htmlTitle,
+                  metaDescription: page.metaDescription,
+                  domain: page.domain,
+                  templatePath: page.templatePath,
+                  publishDate: page.publishDate,
+                  created: page.created,
+                  updated: page.updated,
+                  url: page.url,
+                  absoluteUrl: page.absoluteUrl,
+                  currentlyPublished: page.currentlyPublished,
+                  // Include nested structures but with warning
+                  hasLayoutSections: !!page.layoutSections,
+                  hasWidgets: !!page.widgets,
+                  hasWidgetContainers: !!page.widgetContainers
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: '⚠️ Page retrieved successfully. WARNING: This page contains complex nested structures (layoutSections, widgets). Use update_page_metadata to safely update only metadata fields.'
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_update_page_metadata': {
+        if (!toolArgs.pageId || !toolArgs.pageType) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId and pageType are required');
+        }
+
+        const metadata: any = {};
+        if (toolArgs.name) metadata.name = toolArgs.name as string;
+        if (toolArgs.slug) metadata.slug = toolArgs.slug as string;
+        if (toolArgs.htmlTitle) metadata.htmlTitle = toolArgs.htmlTitle as string;
+        if (toolArgs.metaDescription) metadata.metaDescription = toolArgs.metaDescription as string;
+
+        const result = await hubspotClient.updatePageMetadata(
+          toolArgs.pageId as string,
+          toolArgs.pageType as 'site-pages' | 'landing-pages',
+          metadata
+        );
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const page = result.data!;
+        const previewUrl = page.url ? `${page.url}?hs_preview=${page.previewKey || 'draft'}` : undefined;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                contentId: page.id,
+                previewUrl,
+                updatedFields: Object.keys(metadata),
+                page: {
+                  id: page.id,
+                  name: page.name,
+                  slug: page.slug,
+                  state: page.state,
+                  htmlTitle: page.htmlTitle,
+                  metaDescription: page.metaDescription,
+                  updated: page.updated
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Page metadata updated successfully. Changes saved to draft (not yet published). Preview at: ${previewUrl || 'N/A'}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_list_templates': {
+        const result = await hubspotClient.listTemplates();
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                count: data.results?.length || 0,
+                templates: data.results?.map(template => ({
+                  id: template.id,
+                  path: template.path,
+                  label: template.label,
+                  type: template.type,
+                  isAvailableForNewContent: template.isAvailableForNewContent
+                })) || [],
+                rateLimitStatus: result.rateLimitStatus,
+                message: `Found ${data.results?.length || 0} template(s). Use template paths when creating new pages.`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_create_page_from_template': {
+        if (!toolArgs.name || !toolArgs.slug || !toolArgs.templatePath) {
+          throw new McpError(ErrorCode.InvalidParams, 'name, slug, and templatePath are required');
+        }
+
+        const createParams: any = {
+          name: toolArgs.name as string,
+          slug: toolArgs.slug as string,
+          templatePath: toolArgs.templatePath as string
+        };
+
+        // Add optional parameters
+        if (toolArgs.domain) createParams.domain = toolArgs.domain as string;
+        if (toolArgs.htmlTitle) createParams.htmlTitle = toolArgs.htmlTitle as string;
+        if (toolArgs.metaDescription) createParams.metaDescription = toolArgs.metaDescription as string;
+
+        const pageType = (toolArgs.pageType as 'site-pages' | 'landing-pages') || 'site-pages';
+
+        const result = await hubspotClient.createPageFromTemplate(createParams, pageType);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const page = result.data!;
+        const previewUrl = page.url ? `${page.url}?hs_preview=${page.previewKey || 'draft'}` : undefined;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                contentId: page.id,
+                previewUrl,
+                page: {
+                  id: page.id,
+                  name: page.name,
+                  slug: page.slug,
+                  state: page.state,
+                  templatePath: page.templatePath,
+                  url: page.url
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Page created successfully in DRAFT state. Preview at: ${previewUrl || 'N/A'}. Use hubspot_publish_blog_post_draft to publish when ready (or publish through HubSpot UI).`
               }, null, 2)
             }
           ]

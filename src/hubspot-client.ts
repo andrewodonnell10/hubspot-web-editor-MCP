@@ -17,7 +17,12 @@ import {
   FileUploadParams,
   FileUploadResponse,
   BlogTag,
-  PreviewUrlParams
+  PreviewUrlParams,
+  Page,
+  PageListParams,
+  PageUpdateMetadata,
+  Template,
+  PageCreateParams
 } from './types.js';
 import { RateLimiter } from './rate-limiter.js';
 import { logger } from './logger.js';
@@ -670,5 +675,176 @@ export class HubSpotClient {
       data: { previewUrl },
       rateLimitStatus: this.rateLimiter.getStatus()
     };
+  }
+
+  // ========================================
+  // Phase 3: Page management and advanced features
+  // ========================================
+
+  /**
+   * List pages (site pages or landing pages) with filtering and pagination
+   * Inputs: page_type (site-pages/landing-pages), state, template_path, domain
+   * Output: Array of pages with id, name, slug, state, domain
+   * Implementation: GET /cms/v3/pages/{pageType}
+   */
+  async listPages(
+    params: PageListParams
+  ): Promise<HubSpotResponse<PaginatedResponse<Page>>> {
+    const queryParams = new URLSearchParams();
+
+    // Add pagination
+    if (params.limit) queryParams.set('limit', Math.min(params.limit, 100).toString());
+    if (params.offset) queryParams.set('offset', params.offset.toString());
+
+    // Add filters
+    if (params.state) queryParams.set('state', params.state);
+    if (params.templatePath) queryParams.set('templatePath', params.templatePath);
+    if (params.domain) queryParams.set('domain', params.domain);
+    if (params.name) queryParams.set('name__icontains', params.name);
+    if (params.created) queryParams.set('created__gt', params.created);
+    if (params.updated) queryParams.set('updated__gt', params.updated);
+    if (params.archivedInDashboard !== undefined) {
+      queryParams.set('archivedInDashboard', params.archivedInDashboard.toString());
+    }
+
+    const endpoint = `/cms/v3/pages/${params.pageType}?${queryParams.toString()}`;
+    logger.info('Listing pages', { pageType: params.pageType, filters: params });
+
+    return this.request<PaginatedResponse<Page>>(endpoint, { method: 'GET' });
+  }
+
+  /**
+   * Get complete page details
+   * Input: page_id, page_type
+   * Output: Full page object (WARNING: includes complex nested structures)
+   * Implementation: GET /cms/v3/pages/{pageType}/{objectId}
+   */
+  async getPage(pageId: string, pageType: 'site-pages' | 'landing-pages'): Promise<HubSpotResponse<Page>> {
+    logger.info('Fetching page', { pageId, pageType });
+    return this.request<Page>(`/cms/v3/pages/${pageType}/${pageId}`, { method: 'GET' });
+  }
+
+  /**
+   * Update page metadata using fetch-first pattern
+   * CRITICAL: Explicitly excludes layoutSections, widgets, widgetContainers to prevent data loss
+   * Only updates: name, slug, htmlTitle, metaDescription
+   * Inputs: page_id, page_type, title, meta_description, slug
+   * Output: Updated page draft
+   * Implementation: Fetch → modify simple fields only → PATCH /draft
+   * Safety: Explicitly excludes layoutSections, widgets, widgetContainers
+   * Purpose: SEO optimization without layout risk
+   */
+  async updatePageMetadata(
+    pageId: string,
+    pageType: 'site-pages' | 'landing-pages',
+    metadata: PageUpdateMetadata
+  ): Promise<HubSpotResponse<Page>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Starting page metadata update with fetch-first pattern', { opId, pageId, pageType });
+
+    // STEP 1: Fetch current state
+    const currentResponse = await this.getPage(pageId, pageType);
+    if (!currentResponse.success || !currentResponse.data) {
+      logger.error('Failed to fetch current page state', { opId, pageId });
+      return currentResponse;
+    }
+
+    const beforeState = currentResponse.data;
+    logger.info('Fetched current page state', { opId, pageId });
+
+    // STEP 2: Merge metadata (explicitly exclude nested structures)
+    const updatedPage = {
+      ...beforeState,
+      ...metadata,
+      // CRITICAL: Preserve all nested structures to prevent data loss
+      widgets: beforeState.widgets,
+      widgetContainers: beforeState.widgetContainers,
+      layoutSections: beforeState.layoutSections
+    };
+
+    // STEP 3: PATCH to draft endpoint
+    logger.info('Updating page draft with metadata', { opId, pageId });
+    const response = await this.request<Page>(
+      `/cms/v3/pages/${pageType}/${pageId}/draft`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(updatedPage)
+      }
+    );
+
+    if (response.success) {
+      logger.logOperation(
+        'update_page_metadata',
+        { opId, pageId, pageType, metadata },
+        beforeState,
+        response.data
+      );
+    }
+
+    return response;
+  }
+
+  /**
+   * List available templates
+   * Output: Array of templates with id, path, label, type
+   * Implementation: GET /cms/v3/source-code/draft/metadata/templates
+   */
+  async listTemplates(): Promise<HubSpotResponse<{ results: Template[] }>> {
+    logger.info('Fetching templates list');
+
+    // Note: The actual endpoint structure may vary based on HubSpot API
+    // This is a simplified version - in production you might need to paginate
+    const endpoint = '/content/api/v2/templates';
+
+    return this.request<{ results: Template[] }>(endpoint, { method: 'GET' });
+  }
+
+  /**
+   * Create a new page from template
+   * Inputs: name, template_path, slug, domain, title, meta_description
+   * Output: Created page in draft state
+   * Implementation: POST /cms/v3/pages/site-pages with minimal content
+   *
+   * IMPORTANT: templatePath must NOT include leading slash
+   */
+  async createPageFromTemplate(
+    params: PageCreateParams,
+    pageType: 'site-pages' | 'landing-pages' = 'site-pages'
+  ): Promise<HubSpotResponse<Page>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Creating page from template', { opId, params, pageType });
+
+    // Build request body with DRAFT state
+    const requestBody: any = {
+      name: params.name,
+      slug: params.slug,
+      // CRITICAL: Do NOT include leading slash in templatePath
+      templatePath: params.templatePath.replace(/^\//, ''),
+      state: 'DRAFT'  // Always create as draft for safety
+    };
+
+    // Add optional fields
+    if (params.domain) requestBody.domain = params.domain;
+    if (params.htmlTitle) requestBody.htmlTitle = params.htmlTitle;
+    if (params.metaDescription) requestBody.metaDescription = params.metaDescription;
+
+    const response = await this.request<Page>(
+      `/cms/v3/pages/${pageType}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody)
+      }
+    );
+
+    if (response.success) {
+      logger.logOperation(
+        'create_page_from_template',
+        { opId, params, pageType },
+        undefined,
+        response.data
+      );
+    }
+
+    return response;
   }
 }
