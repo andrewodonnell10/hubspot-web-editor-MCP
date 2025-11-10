@@ -194,6 +194,147 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['postId']
         }
+      },
+      // Phase 2: Content creation and file management
+      {
+        name: 'hubspot_create_blog_post',
+        description: 'Create a new blog post in DRAFT state. Supports creating posts with title, slug, content, author, tags, featured image, and metadata. All posts are created as drafts requiring explicit publication. Returns the created post ID and preview URL. Perfect for AI-assisted content creation with human review before going live.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Internal name/title of the blog post'
+            },
+            slug: {
+              type: 'string',
+              description: 'URL slug for the post (e.g., "my-blog-post" becomes /blog/my-blog-post)'
+            },
+            contentGroupId: {
+              type: 'string',
+              description: 'Optional: Blog ID to publish to. If not provided, uses the default blog.'
+            },
+            blogAuthorId: {
+              type: 'string',
+              description: 'Optional: ID of the blog author'
+            },
+            htmlTitle: {
+              type: 'string',
+              description: 'Optional: HTML title tag content (SEO title)'
+            },
+            postBody: {
+              type: 'string',
+              description: 'Optional: HTML content of the blog post. Can be added later with update_content.'
+            },
+            postSummary: {
+              type: 'string',
+              description: 'Optional: Brief summary for blog listing pages'
+            },
+            metaDescription: {
+              type: 'string',
+              description: 'Optional: Meta description for SEO'
+            },
+            tagIds: {
+              type: 'array',
+              items: { type: 'number' },
+              description: 'Optional: Array of tag IDs to associate with the post'
+            },
+            featuredImage: {
+              type: 'string',
+              description: 'Optional: URL of the featured image (use hubspot_upload_file first)'
+            },
+            featuredImageAltText: {
+              type: 'string',
+              description: 'Optional: Alt text for the featured image'
+            }
+          },
+          required: ['name', 'slug']
+        }
+      },
+      {
+        name: 'hubspot_update_blog_post_content',
+        description: 'Update the content body (postBody) of an existing blog post. Uses fetch-first pattern to safely modify content while preserving all other properties. Updates are saved to DRAFT state, requiring explicit publishing. IMPORTANT: This modifies the actual post content (HTML). Always generate a preview URL after content updates for human review.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            postId: {
+              type: 'string',
+              description: 'The ID of the blog post to update'
+            },
+            postBody: {
+              type: 'string',
+              description: 'HTML content for the blog post'
+            },
+            postSummary: {
+              type: 'string',
+              description: 'Optional: Brief summary for blog listing pages'
+            }
+          },
+          required: ['postId', 'postBody']
+        }
+      },
+      {
+        name: 'hubspot_upload_file',
+        description: 'Upload a file (image, PDF, document) to HubSpot File Manager. Supports uploading from URL or base64 encoded content. Returns the CDN URL which can be used in blog posts as featured images or embedded content. Files are uploaded with PUBLIC_INDEXABLE access by default for SEO.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            fileContent: {
+              type: 'string',
+              description: 'File content as base64 encoded string (data:image/png;base64,...) or URL (http://...)'
+            },
+            fileName: {
+              type: 'string',
+              description: 'Name of the file including extension (e.g., "featured-image.jpg")'
+            },
+            folderPath: {
+              type: 'string',
+              description: 'Optional: Folder path in HubSpot File Manager (e.g., "/images/blog"). Defaults to root.'
+            },
+            access: {
+              type: 'string',
+              enum: ['PUBLIC_INDEXABLE', 'PUBLIC_NOT_INDEXABLE', 'PRIVATE'],
+              description: 'Optional: Access level. PUBLIC_INDEXABLE (default) for SEO, PUBLIC_NOT_INDEXABLE for downloads, PRIVATE for authenticated access only.'
+            },
+            ttl: {
+              type: 'string',
+              description: 'Optional: Time to live (e.g., "P3M" for 3 months). Defaults to never expire.'
+            }
+          },
+          required: ['fileContent', 'fileName']
+        }
+      },
+      {
+        name: 'hubspot_list_blog_tags',
+        description: 'Retrieve all blog tags with optional search filtering. Returns tag IDs, names, and slugs for use in content categorization. Use this to discover existing tags before creating blog posts to ensure consistent taxonomy.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            searchTerm: {
+              type: 'string',
+              description: 'Optional: Search term to filter tags by name (partial match supported)'
+            }
+          }
+        }
+      },
+      {
+        name: 'hubspot_get_draft_preview_url',
+        description: 'Generate a preview URL for draft content to enable human review before publication. Returns a URL with preview token that displays the draft version. Essential for the review workflow: create/update content, generate preview, human approves, then publish.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            contentId: {
+              type: 'string',
+              description: 'The ID of the blog post or page'
+            },
+            contentType: {
+              type: 'string',
+              enum: ['blog-post', 'site-page', 'landing-page'],
+              description: 'Type of content (currently only blog-post is fully supported)'
+            }
+          },
+          required: ['contentId', 'contentType']
+        }
       }
     ]
   };
@@ -501,6 +642,269 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 message: isScheduled
                   ? `✓ Blog post scheduled for publishing on ${options.publishDate}. It will go live automatically at the scheduled time.`
                   : `✓ Blog post published successfully! Now live at: ${post.absoluteUrl}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      // Phase 2: Content creation and file management
+      case 'hubspot_create_blog_post': {
+        if (!toolArgs.name || !toolArgs.slug) {
+          throw new McpError(ErrorCode.InvalidParams, 'name and slug are required');
+        }
+
+        const createParams: any = {
+          name: toolArgs.name as string,
+          slug: toolArgs.slug as string
+        };
+
+        // Add optional parameters
+        if (toolArgs.contentGroupId) createParams.contentGroupId = toolArgs.contentGroupId as string;
+        if (toolArgs.blogAuthorId) createParams.blogAuthorId = toolArgs.blogAuthorId as string;
+        if (toolArgs.htmlTitle) createParams.htmlTitle = toolArgs.htmlTitle as string;
+        if (toolArgs.postBody) createParams.postBody = toolArgs.postBody as string;
+        if (toolArgs.postSummary) createParams.postSummary = toolArgs.postSummary as string;
+        if (toolArgs.metaDescription) createParams.metaDescription = toolArgs.metaDescription as string;
+        if (toolArgs.tagIds) createParams.tagIds = toolArgs.tagIds as number[];
+        if (toolArgs.featuredImage) createParams.featuredImage = toolArgs.featuredImage as string;
+        if (toolArgs.featuredImageAltText) createParams.featuredImageAltText = toolArgs.featuredImageAltText as string;
+
+        const result = await hubspotClient.createBlogPost(createParams);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const post = result.data!;
+        const previewUrl = post.url ? `${post.url}?hs_preview=${post.previewKey || 'draft'}` : undefined;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                contentId: post.id,
+                previewUrl,
+                post: {
+                  id: post.id,
+                  name: post.name,
+                  slug: post.slug,
+                  state: post.state,
+                  url: post.url
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Blog post created successfully in DRAFT state. Preview at: ${previewUrl || 'N/A'}. Use hubspot_publish_blog_post_draft to publish when ready.`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_update_blog_post_content': {
+        if (!toolArgs.postId || !toolArgs.postBody) {
+          throw new McpError(ErrorCode.InvalidParams, 'postId and postBody are required');
+        }
+
+        const contentUpdate: any = {
+          postBody: toolArgs.postBody as string
+        };
+
+        if (toolArgs.postSummary) {
+          contentUpdate.postSummary = toolArgs.postSummary as string;
+        }
+
+        const result = await hubspotClient.updateBlogPostContent(
+          toolArgs.postId as string,
+          contentUpdate
+        );
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const post = result.data!;
+        const previewUrl = post.url ? `${post.url}?hs_preview=${post.previewKey || 'draft'}` : undefined;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                contentId: post.id,
+                previewUrl,
+                post: {
+                  id: post.id,
+                  name: post.name,
+                  state: post.state,
+                  updated: post.updated
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Blog post content updated successfully. Changes saved to DRAFT (not yet published). Preview at: ${previewUrl || 'N/A'}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_upload_file': {
+        if (!toolArgs.fileContent || !toolArgs.fileName) {
+          throw new McpError(ErrorCode.InvalidParams, 'fileContent and fileName are required');
+        }
+
+        const uploadParams: any = {
+          fileContent: toolArgs.fileContent as string,
+          fileName: toolArgs.fileName as string
+        };
+
+        if (toolArgs.folderPath) uploadParams.folderPath = toolArgs.folderPath as string;
+        if (toolArgs.access) uploadParams.access = toolArgs.access as 'PUBLIC_INDEXABLE' | 'PUBLIC_NOT_INDEXABLE' | 'PRIVATE';
+        if (toolArgs.ttl) uploadParams.ttl = toolArgs.ttl as string;
+
+        const result = await hubspotClient.uploadFile(uploadParams);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const file = result.data!;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                file: {
+                  id: file.id,
+                  url: file.url,
+                  name: file.name,
+                  path: file.path,
+                  type: file.type,
+                  size: file.size
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ File uploaded successfully! Use this URL in your content: ${file.url}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_list_blog_tags': {
+        const searchTerm = toolArgs.searchTerm as string | undefined;
+
+        const result = await hubspotClient.listBlogTags(searchTerm);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                total: data.total,
+                count: data.results.length,
+                tags: data.results.map(tag => ({
+                  id: tag.id,
+                  name: tag.name,
+                  slug: tag.slug
+                })),
+                rateLimitStatus: result.rateLimitStatus,
+                message: `Found ${data.total} blog tag(s)${searchTerm ? ` matching "${searchTerm}"` : ''}. Use tag IDs when creating or updating blog posts.`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_get_draft_preview_url': {
+        if (!toolArgs.contentId || !toolArgs.contentType) {
+          throw new McpError(ErrorCode.InvalidParams, 'contentId and contentType are required');
+        }
+
+        const params: any = {
+          contentId: toolArgs.contentId as string,
+          contentType: toolArgs.contentType as 'blog-post' | 'site-page' | 'landing-page'
+        };
+
+        const result = await hubspotClient.getDraftPreviewUrl(params);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                previewUrl: result.data!.previewUrl,
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Preview URL generated. Review the draft content at: ${result.data!.previewUrl}`
               }, null, 2)
             }
           ]
