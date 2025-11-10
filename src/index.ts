@@ -233,22 +233,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const data = result.data!;
         const rateLimitStatus = hubspotClient.getRateLimitStatus();
 
+        // Build connection info, handling both OAuth and Private App token responses
+        const connectionInfo: any = {
+          authenticated: true
+        };
+
+        // Add available fields from the response
+        if (data.hub_id) connectionInfo.hubId = data.hub_id;
+        if (data.hub_domain) connectionInfo.hubDomain = data.hub_domain;
+        if (data.user_id) connectionInfo.userId = data.user_id;
+        if (data.user) connectionInfo.userName = data.user;
+        if (data.app_id) connectionInfo.appId = data.app_id;
+        if (data.token_type) connectionInfo.tokenType = data.token_type;
+        if (data.expires_at) connectionInfo.expiresAt = new Date(data.expires_at).toISOString();
+
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
                 success: true,
-                connection: {
-                  hubId: data.hub_id,
-                  hubDomain: data.hub_domain,
-                  userId: data.user_id,
-                  userName: data.user,
-                  appId: data.app_id,
-                  tokenType: data.token_type,
-                  expiresAt: new Date(data.expires_at).toISOString()
-                },
-                scopes: data.scopes,
+                connection: connectionInfo,
+                scopes: data.scopes || [],
                 rateLimitStatus: {
                   dailyRemaining: rateLimitStatus.dailyRemaining,
                   burstRemaining: rateLimitStatus.burstRemaining,

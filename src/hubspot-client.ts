@@ -177,12 +177,11 @@ export class HubSpotClient {
 
   /**
    * Validate token and get connection information
+   * For Private App tokens, we validate by making a test API call to get account details
    */
   async validateToken(): Promise<HubSpotResponse<TokenValidationResponse>> {
-    // Extract token from Bearer format if needed
-    const token = this.config.accessToken.replace('Bearer ', '');
     return this.request<TokenValidationResponse>(
-      `/oauth/v1/access-tokens/${token}`,
+      `/integrations/v1/me`,
       { method: 'GET' }
     );
   }
