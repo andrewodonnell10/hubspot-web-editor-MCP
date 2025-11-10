@@ -11,7 +11,13 @@ import {
   BlogPostListParams,
   PaginatedResponse,
   BlogPostUpdateMetadata,
-  PublishOptions
+  PublishOptions,
+  BlogPostCreateParams,
+  BlogPostContentUpdate,
+  FileUploadParams,
+  FileUploadResponse,
+  BlogTag,
+  PreviewUrlParams
 } from './types.js';
 import { RateLimiter } from './rate-limiter.js';
 import { logger } from './logger.js';
@@ -322,5 +328,347 @@ export class HubSpotClient {
    */
   getRateLimitStatus() {
     return this.rateLimiter.getStatus();
+  }
+
+  // ========================================
+  // Phase 2: Content creation and file management
+  // ========================================
+
+  /**
+   * Create a new blog post in draft state
+   * Inputs: name, slug, content_body (optional), author_id, tag_ids, meta_description, summary
+   * Output: Created post with draft state
+   * Implementation: POST /cms/v3/blogs/posts with state: "DRAFT"
+   * Purpose: AI-assisted content creation starting from draft
+   */
+  async createBlogPost(
+    params: BlogPostCreateParams
+  ): Promise<HubSpotResponse<BlogPost>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Creating blog post draft', { opId, params });
+
+    // Build request body with DRAFT state
+    const requestBody: any = {
+      name: params.name,
+      slug: params.slug,
+      state: 'DRAFT'  // Always create as draft for safety
+    };
+
+    // Add optional fields
+    if (params.contentGroupId) requestBody.contentGroupId = params.contentGroupId;
+    if (params.blogAuthorId) requestBody.blogAuthorId = params.blogAuthorId;
+    if (params.htmlTitle) requestBody.htmlTitle = params.htmlTitle;
+    if (params.postBody) requestBody.postBody = params.postBody;
+    if (params.postSummary) requestBody.postSummary = params.postSummary;
+    if (params.metaDescription) requestBody.metaDescription = params.metaDescription;
+    if (params.tagIds && params.tagIds.length > 0) requestBody.tagIds = params.tagIds;
+    if (params.featuredImage) {
+      requestBody.useFeaturedImage = true;
+      requestBody.featuredImage = params.featuredImage;
+    }
+    if (params.featuredImageAltText) requestBody.featuredImageAltText = params.featuredImageAltText;
+
+    const response = await this.request<BlogPost>(
+      '/cms/v3/blogs/posts',
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody)
+      }
+    );
+
+    if (response.success) {
+      logger.logOperation(
+        'create_blog_post',
+        { opId, params },
+        undefined,
+        response.data
+      );
+    }
+
+    return response;
+  }
+
+  /**
+   * Update blog post content (postBody) using fetch-first pattern
+   * Inputs: post_id, content_body (HTML string), summary
+   * Output: Updated draft
+   * Implementation: Fetch current → modify postBody → PATCH /draft with full object
+   * Safety: Preview required before publishing
+   * Purpose: AI content generation and editing
+   */
+  async updateBlogPostContent(
+    postId: string,
+    content: BlogPostContentUpdate
+  ): Promise<HubSpotResponse<BlogPost>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Starting content update with fetch-first pattern', { opId, postId });
+
+    // STEP 1: Fetch current state
+    const currentResponse = await this.getBlogPost(postId);
+    if (!currentResponse.success || !currentResponse.data) {
+      logger.error('Failed to fetch current state', { opId, postId });
+      return currentResponse;
+    }
+
+    const beforeState = currentResponse.data;
+    logger.info('Fetched current state for content update', { opId, postId });
+
+    // STEP 2: Merge content changes with full object
+    const updatedPost = {
+      ...beforeState,
+      postBody: content.postBody
+    };
+
+    // Add postSummary if provided
+    if (content.postSummary !== undefined) {
+      updatedPost.postSummary = content.postSummary;
+    }
+
+    // STEP 3: PATCH to draft endpoint with complete object
+    logger.info('Updating draft with new content', { opId, postId });
+    const response = await this.request<BlogPost>(
+      `/cms/v3/blogs/posts/${postId}/draft`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(updatedPost)
+      }
+    );
+
+    if (response.success) {
+      logger.logOperation(
+        'update_blog_post_content',
+        { opId, postId, contentLength: content.postBody.length },
+        beforeState,
+        response.data
+      );
+    }
+
+    return response;
+  }
+
+  /**
+   * Upload a file to HubSpot File Manager
+   * Inputs: file_path or file_url, folder_path, access_level, file_name
+   * Output: File URL for use in content
+   * Implementation: POST /files/v3/files with multipart/form-data
+   * Purpose: Asset management for AI-generated or selected images
+   */
+  async uploadFile(
+    params: FileUploadParams
+  ): Promise<HubSpotResponse<FileUploadResponse>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Uploading file to HubSpot', { opId, fileName: params.fileName });
+
+    // Note: For file uploads, we need to use multipart/form-data
+    // This is a simplified implementation that assumes the file content is base64 encoded
+    // In a production environment, you might want to handle file streams differently
+
+    const formData = new FormData();
+
+    // Convert base64 to blob if needed
+    let fileBlob: Blob;
+    if (params.fileContent.startsWith('http://') || params.fileContent.startsWith('https://')) {
+      // If it's a URL, fetch the file first
+      try {
+        const fileResponse = await fetch(params.fileContent);
+        fileBlob = await fileResponse.blob();
+      } catch (error) {
+        logger.error('Failed to fetch file from URL', { opId, url: params.fileContent, error });
+        return {
+          success: false,
+          error: {
+            status: 'FILE_FETCH_ERROR',
+            message: `Failed to fetch file from URL: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            correlationId: 'N/A'
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+    } else {
+      // Assume it's base64 encoded
+      const base64Data = params.fileContent.replace(/^data:[^;]+;base64,/, '');
+      const binaryString = atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      fileBlob = new Blob([bytes]);
+    }
+
+    formData.append('file', fileBlob, params.fileName);
+
+    // Add options as JSON string
+    const options: any = {
+      access: params.access || 'PUBLIC_INDEXABLE',
+      duplicateValidationStrategy: 'NONE'
+    };
+
+    if (params.ttl) {
+      options.ttl = params.ttl;
+    }
+
+    formData.append('options', JSON.stringify(options));
+
+    if (params.folderPath) {
+      formData.append('folderPath', params.folderPath);
+    }
+
+    // Check rate limits before making request
+    if (!this.rateLimiter.canMakeRequest()) {
+      return {
+        success: false,
+        error: {
+          status: 'RATE_LIMIT_SAFETY',
+          message: 'Approaching rate limit threshold. Request blocked by safety margin.',
+          correlationId: 'N/A'
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    const url = `${this.baseUrl}/files/v3/files`;
+    const headers = new Headers();
+    headers.set('Authorization', `Bearer ${this.config.accessToken}`);
+    // Don't set Content-Type for FormData - browser will set it with boundary
+
+    try {
+      this.rateLimiter.recordRequest();
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: formData
+      });
+
+      // Update rate limits from response headers
+      this.rateLimiter.updateFromHeaders(response.headers);
+
+      const responseData = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const error = this.parseError(response, responseData);
+        logger.error('File upload failed', { opId, error });
+
+        return {
+          success: false,
+          error,
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      const fileData = responseData as FileUploadResponse;
+      logger.info('File uploaded successfully', { opId, fileUrl: fileData.url });
+
+      return {
+        success: true,
+        data: fileData,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    } catch (error) {
+      logger.error('File upload request failed', { opId, error });
+
+      return {
+        success: false,
+        error: {
+          status: 'NETWORK_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown network error',
+          correlationId: 'N/A'
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+  }
+
+  /**
+   * List blog tags with optional search
+   * Inputs: search_term (optional)
+   * Output: Array of tags with id, name, slug
+   * Implementation: GET /cms/v3/blogs/tags
+   * Purpose: Tag selection for content categorization
+   */
+  async listBlogTags(searchTerm?: string): Promise<HubSpotResponse<PaginatedResponse<BlogTag>>> {
+    const queryParams = new URLSearchParams();
+    queryParams.set('limit', '100');
+
+    if (searchTerm) {
+      queryParams.set('name__icontains', searchTerm);
+    }
+
+    const endpoint = `/cms/v3/blogs/tags?${queryParams.toString()}`;
+    logger.info('Fetching blog tags', { searchTerm });
+
+    return this.request<PaginatedResponse<BlogTag>>(endpoint, { method: 'GET' });
+  }
+
+  /**
+   * Generate a preview URL for draft content
+   * Input: post_id or page_id
+   * Output: Preview URL for review
+   * Implementation: Construct preview URL with domain + slug + preview token
+   * Purpose: Enable human review before publication
+   */
+  async getDraftPreviewUrl(
+    params: PreviewUrlParams
+  ): Promise<HubSpotResponse<{ previewUrl: string }>> {
+    logger.info('Generating preview URL', { contentId: params.contentId, contentType: params.contentType });
+
+    // First, fetch the content to get the URL and preview key
+    let content: BlogPost | undefined;
+
+    if (params.contentType === 'blog-post') {
+      const response = await this.getBlogPost(params.contentId);
+      if (!response.success || !response.data) {
+        return {
+          success: false,
+          error: response.error || {
+            status: 'NOT_FOUND',
+            message: 'Failed to fetch content for preview URL generation',
+            correlationId: 'N/A'
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+      content = response.data;
+    } else {
+      // For pages, we would need to implement page fetching
+      // For now, return an error for unsupported content types
+      return {
+        success: false,
+        error: {
+          status: 'NOT_IMPLEMENTED',
+          message: 'Preview URL generation for pages is not yet implemented. Only blog-post is supported.',
+          correlationId: 'N/A'
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    // Construct preview URL
+    let previewUrl: string;
+    if (content.url) {
+      // Add preview key if available, otherwise use generic preview parameter
+      const previewParam = content.previewKey
+        ? `?hs_preview=${content.previewKey}`
+        : '?hsPreview=true';
+      previewUrl = `${content.url}${previewParam}`;
+    } else {
+      return {
+        success: false,
+        error: {
+          status: 'NO_URL',
+          message: 'Content does not have a URL yet. Save the content first to generate a URL.',
+          correlationId: 'N/A'
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    logger.info('Preview URL generated', { previewUrl });
+
+    return {
+      success: true,
+      data: { previewUrl },
+      rateLimitStatus: this.rateLimiter.getStatus()
+    };
   }
 }

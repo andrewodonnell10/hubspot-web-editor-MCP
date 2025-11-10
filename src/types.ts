@@ -53,6 +53,7 @@ export interface BlogPost {
   state: 'DRAFT' | 'PUBLISHED' | 'SCHEDULED';
   currentState?: 'DRAFT' | 'PUBLISHED' | 'SCHEDULED';
   postBody?: string;
+  postSummary?: string;
   metaDescription?: string;
   featuredImage?: string;
   featuredImageAltText?: string;
@@ -119,4 +120,55 @@ export interface OperationResult {
   message: string;
   rateLimitStatus: RateLimitStatus;
   timestamp: string;
+}
+
+// Phase 2: Content creation and file management types
+
+export interface BlogPostCreateParams {
+  name: string;  // Internal name for the post
+  slug: string;  // URL slug
+  contentGroupId?: string;  // Blog ID (optional, will use default if not specified)
+  blogAuthorId?: string;  // Author ID
+  htmlTitle?: string;  // SEO title
+  postBody?: string;  // HTML content (optional for initial creation)
+  postSummary?: string;  // Brief summary for listings
+  metaDescription?: string;  // Meta description
+  tagIds?: number[];  // Array of tag IDs
+  featuredImage?: string;  // Featured image URL
+  featuredImageAltText?: string;  // Featured image alt text
+}
+
+export interface BlogPostContentUpdate {
+  postBody: string;  // HTML content
+  postSummary?: string;  // Brief summary
+}
+
+export interface FileUploadParams {
+  fileContent: string;  // Base64 encoded file content or URL
+  fileName: string;  // Name of the file
+  folderPath?: string;  // Folder path in HubSpot (e.g., "/images/blog")
+  access?: 'PUBLIC_INDEXABLE' | 'PUBLIC_NOT_INDEXABLE' | 'PRIVATE';
+  ttl?: string;  // Time to live (e.g., "P3M" for 3 months)
+}
+
+export interface FileUploadResponse {
+  id: string;
+  url: string;  // CDN URL of the uploaded file
+  name: string;
+  path: string;
+  type: string;
+  size: number;
+}
+
+export interface BlogTag {
+  id: number;
+  name: string;
+  slug: string;
+  created?: string;
+  updated?: string;
+}
+
+export interface PreviewUrlParams {
+  contentId: string;
+  contentType: 'blog-post' | 'site-page' | 'landing-page';
 }
