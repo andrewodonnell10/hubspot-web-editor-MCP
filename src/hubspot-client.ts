@@ -22,7 +22,16 @@ import {
   PageListParams,
   PageUpdateMetadata,
   Template,
-  PageCreateParams
+  PageCreateParams,
+  Widget,
+  WidgetLocation,
+  PageContentStructure,
+  WidgetUpdateParams,
+  WidgetAddParams,
+  WidgetRemoveParams,
+  WidgetReorderParams,
+  PageContentUpdate,
+  StructuralValidation
 } from './types.js';
 import { RateLimiter } from './rate-limiter.js';
 import { logger } from './logger.js';
@@ -846,5 +855,674 @@ export class HubSpotClient {
     }
 
     return response;
+  }
+
+  // ========================================
+  // Phase 5: Safe webpage content and appearance editing
+  // ========================================
+
+  /**
+   * Helper: Extract all widgets from a page's layoutSections
+   * Returns a flat array of widgets with their locations
+   */
+  private extractWidgetsFromPage(page: Page): PageContentStructure {
+    const widgets: PageContentStructure['widgets'] = [];
+    const layoutSections: string[] = [];
+
+    if (!page.layoutSections || typeof page.layoutSections !== 'object') {
+      return {
+        pageId: page.id,
+        pageName: page.name,
+        widgets: [],
+        layoutSections: [],
+        totalWidgets: 0
+      };
+    }
+
+    // Iterate through all layout sections
+    for (const [sectionName, section] of Object.entries(page.layoutSections)) {
+      layoutSections.push(sectionName);
+
+      if (!section || typeof section !== 'object' || !Array.isArray((section as any).rows)) {
+        continue;
+      }
+
+      const rows = (section as any).rows;
+
+      // Iterate through rows
+      rows.forEach((row: any, rowIndex: number) => {
+        if (!row.cells || !Array.isArray(row.cells)) {
+          return;
+        }
+
+        // Iterate through columns/cells
+        row.cells.forEach((cell: any, columnIndex: number) => {
+          if (!cell.widgets || !Array.isArray(cell.widgets)) {
+            return;
+          }
+
+          // Iterate through widgets
+          cell.widgets.forEach((widget: any, widgetIndex: number) => {
+            const hasHtmlContent = !!(widget.body && widget.body.html);
+            const contentPreview = hasHtmlContent
+              ? widget.body.html.substring(0, 100).replace(/<[^>]*>/g, '').trim()
+              : undefined;
+
+            widgets.push({
+              id: widget.id || `widget-${sectionName}-${rowIndex}-${columnIndex}-${widgetIndex}`,
+              name: widget.name || widget.type || 'Unnamed Widget',
+              type: widget.type || 'unknown',
+              location: {
+                sectionName,
+                rowIndex,
+                columnIndex,
+                widgetIndex
+              },
+              hasHtmlContent,
+              hasStyles: !!(widget.styles && Object.keys(widget.styles).length > 0),
+              hasParams: !!(widget.params && Object.keys(widget.params).length > 0),
+              contentPreview
+            });
+          });
+        });
+      });
+    }
+
+    return {
+      pageId: page.id,
+      pageName: page.name,
+      widgets,
+      layoutSections,
+      totalWidgets: widgets.length
+    };
+  }
+
+  /**
+   * Helper: Get widget at specific location
+   */
+  private getWidgetAtLocation(page: Page, location: WidgetLocation): Widget | null {
+    try {
+      const section = (page.layoutSections as any)[location.sectionName];
+      if (!section || !section.rows) return null;
+
+      const row = section.rows[location.rowIndex];
+      if (!row || !row.cells) return null;
+
+      const cell = row.cells[location.columnIndex];
+      if (!cell || !cell.widgets) return null;
+
+      const widget = cell.widgets[location.widgetIndex];
+      return widget || null;
+    } catch (error) {
+      logger.error('Error getting widget at location', { location, error });
+      return null;
+    }
+  }
+
+  /**
+   * Helper: Set widget at specific location
+   */
+  private setWidgetAtLocation(page: Page, location: WidgetLocation, widget: Widget): boolean {
+    try {
+      const section = (page.layoutSections as any)[location.sectionName];
+      if (!section || !section.rows) return false;
+
+      const row = section.rows[location.rowIndex];
+      if (!row || !row.cells) return false;
+
+      const cell = row.cells[location.columnIndex];
+      if (!cell || !cell.widgets) return false;
+
+      cell.widgets[location.widgetIndex] = widget;
+      return true;
+    } catch (error) {
+      logger.error('Error setting widget at location', { location, error });
+      return false;
+    }
+  }
+
+  /**
+   * Helper: Validate page structure integrity
+   */
+  private validatePageStructure(beforePage: Page, afterPage: Page): StructuralValidation {
+    const beforeStructure = this.extractWidgetsFromPage(beforePage);
+    const afterStructure = this.extractWidgetsFromPage(afterPage);
+
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    // Check widget count
+    if (beforeStructure.totalWidgets !== afterStructure.totalWidgets) {
+      warnings.push(
+        `Widget count changed from ${beforeStructure.totalWidgets} to ${afterStructure.totalWidgets}`
+      );
+    }
+
+    // Check section count
+    if (beforeStructure.layoutSections.length !== afterStructure.layoutSections.length) {
+      errors.push(
+        `Layout section count changed from ${beforeStructure.layoutSections.length} to ${afterStructure.layoutSections.length}. This indicates structural damage.`
+      );
+    }
+
+    // Check section names
+    const beforeSections = new Set(beforeStructure.layoutSections);
+    const afterSections = new Set(afterStructure.layoutSections);
+
+    beforeSections.forEach(section => {
+      if (!afterSections.has(section)) {
+        errors.push(`Layout section "${section}" was removed`);
+      }
+    });
+
+    afterSections.forEach(section => {
+      if (!beforeSections.has(section)) {
+        warnings.push(`Layout section "${section}" was added`);
+      }
+    });
+
+    return {
+      isValid: errors.length === 0,
+      beforeWidgetCount: beforeStructure.totalWidgets,
+      afterWidgetCount: afterStructure.totalWidgets,
+      beforeSectionCount: beforeStructure.layoutSections.length,
+      afterSectionCount: afterStructure.layoutSections.length,
+      warnings,
+      errors
+    };
+  }
+
+  /**
+   * Get page content structure
+   * Returns a structured view of all widgets and their locations
+   * Input: page_id, page_type
+   * Output: PageContentStructure with widget locations and previews
+   * Purpose: Discover what widgets exist and where they are located
+   */
+  async getPageContentStructure(
+    pageId: string,
+    pageType: 'site-pages' | 'landing-pages'
+  ): Promise<HubSpotResponse<PageContentStructure>> {
+    logger.info('Getting page content structure', { pageId, pageType });
+
+    const pageResponse = await this.getPage(pageId, pageType);
+    if (!pageResponse.success || !pageResponse.data) {
+      return {
+        success: false,
+        error: pageResponse.error,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    const structure = this.extractWidgetsFromPage(pageResponse.data);
+
+    return {
+      success: true,
+      data: structure,
+      rateLimitStatus: this.rateLimiter.getStatus()
+    };
+  }
+
+  /**
+   * Update widget content using fetch-first pattern
+   * CRITICAL: Uses complete fetch-first pattern to preserve all page structure
+   * Only modifies the targeted widget's HTML content, styles, or parameters
+   * Inputs: page_id, page_type, location, html/styles/params
+   * Output: Updated page draft with validation
+   * Implementation: Fetch → locate widget → modify widget → validate structure → PATCH /draft
+   * Safety: Validates complete structure is preserved
+   * Purpose: Safe widget-level content editing
+   */
+  async updateWidgetContent(
+    params: WidgetUpdateParams
+  ): Promise<HubSpotResponse<{ page: Page; validation: StructuralValidation; previewUrl?: string }>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Starting widget content update with fetch-first pattern', {
+      opId,
+      pageId: params.pageId,
+      pageType: params.pageType,
+      location: params.location
+    });
+
+    // STEP 1: Fetch current state
+    const currentResponse = await this.getPage(params.pageId, params.pageType);
+    if (!currentResponse.success || !currentResponse.data) {
+      logger.error('Failed to fetch current page state', { opId, pageId: params.pageId });
+      return {
+        success: false,
+        error: currentResponse.error,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    const beforePage = JSON.parse(JSON.stringify(currentResponse.data)); // Deep clone for comparison
+    const updatedPage = currentResponse.data;
+    logger.info('Fetched current page state', { opId, pageId: params.pageId });
+
+    // STEP 2: Locate and update the specific widget
+    const widget = this.getWidgetAtLocation(updatedPage, params.location);
+    if (!widget) {
+      return {
+        success: false,
+        error: {
+          status: 'WIDGET_NOT_FOUND',
+          message: `Widget not found at location: section="${params.location.sectionName}", row=${params.location.rowIndex}, column=${params.location.columnIndex}, widget=${params.location.widgetIndex}`,
+          correlationId: String(opId)
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    // Update widget properties
+    if (params.html !== undefined) {
+      if (!widget.body) widget.body = {};
+      widget.body.html = params.html;
+      logger.info('Updated widget HTML content', { opId, widgetId: widget.id });
+    }
+
+    if (params.styles !== undefined) {
+      widget.styles = { ...widget.styles, ...params.styles };
+      logger.info('Updated widget styles', { opId, widgetId: widget.id });
+    }
+
+    if (params.params !== undefined) {
+      widget.params = { ...widget.params, ...params.params };
+      logger.info('Updated widget parameters', { opId, widgetId: widget.id });
+    }
+
+    // Set the updated widget back
+    const setSuccess = this.setWidgetAtLocation(updatedPage, params.location, widget);
+    if (!setSuccess) {
+      return {
+        success: false,
+        error: {
+          status: 'UPDATE_FAILED',
+          message: 'Failed to update widget at specified location',
+          correlationId: String(opId)
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    // STEP 3: Validate structure integrity
+    const validation = this.validatePageStructure(beforePage, updatedPage);
+    if (!validation.isValid) {
+      logger.error('Structure validation failed', { opId, validation });
+      return {
+        success: false,
+        error: {
+          status: 'VALIDATION_FAILED',
+          message: `Structure validation failed: ${validation.errors.join(', ')}`,
+          correlationId: String(opId)
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    if (validation.warnings.length > 0) {
+      logger.warn('Structure validation warnings', { opId, warnings: validation.warnings });
+    }
+
+    // STEP 4: PATCH to draft endpoint with complete page object
+    logger.info('Updating page draft with modified widget', { opId, pageId: params.pageId });
+    const response = await this.request<Page>(
+      `/cms/v3/pages/${params.pageType}/${params.pageId}/draft`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(updatedPage)
+      }
+    );
+
+    if (!response.success) {
+      logger.error('Failed to update page draft', { opId, error: response.error });
+      return {
+        success: false,
+        error: response.error,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    // Generate preview URL
+    const previewUrl = response.data?.url
+      ? `${response.data.url}?hs_preview=${response.data.previewKey || 'draft'}`
+      : undefined;
+
+    logger.logOperation(
+      'update_widget_content',
+      { opId, pageId: params.pageId, location: params.location },
+      beforePage,
+      response.data
+    );
+
+    return {
+      success: true,
+      data: {
+        page: response.data!,
+        validation,
+        previewUrl
+      },
+      rateLimitStatus: this.rateLimiter.getStatus()
+    };
+  }
+
+  /**
+   * Add a new widget to a page
+   * CRITICAL: Uses complete fetch-first pattern
+   * Inputs: page_id, page_type, location (without widgetIndex), widget details
+   * Output: Updated page draft
+   * Implementation: Fetch → add widget to cell → validate → PATCH /draft
+   * Safety: Validates structure is preserved and widget count increased by 1
+   */
+  async addWidget(
+    params: WidgetAddParams
+  ): Promise<HubSpotResponse<{ page: Page; validation: StructuralValidation; widgetLocation: WidgetLocation }>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Starting add widget operation', { opId, pageId: params.pageId });
+
+    // STEP 1: Fetch current state
+    const currentResponse = await this.getPage(params.pageId, params.pageType);
+    if (!currentResponse.success || !currentResponse.data) {
+      return {
+        success: false,
+        error: currentResponse.error,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    const beforePage = JSON.parse(JSON.stringify(currentResponse.data));
+    const updatedPage = currentResponse.data;
+
+    // STEP 2: Navigate to the target cell and add widget
+    try {
+      const section = (updatedPage.layoutSections as any)[params.location.sectionName];
+      if (!section || !section.rows) {
+        return {
+          success: false,
+          error: {
+            status: 'SECTION_NOT_FOUND',
+            message: `Layout section "${params.location.sectionName}" not found`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      const row = section.rows[params.location.rowIndex];
+      if (!row || !row.cells) {
+        return {
+          success: false,
+          error: {
+            status: 'ROW_NOT_FOUND',
+            message: `Row ${params.location.rowIndex} not found in section "${params.location.sectionName}"`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      const cell = row.cells[params.location.columnIndex];
+      if (!cell) {
+        return {
+          success: false,
+          error: {
+            status: 'CELL_NOT_FOUND',
+            message: `Column ${params.location.columnIndex} not found in row ${params.location.rowIndex}`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      // Initialize widgets array if it doesn't exist
+      if (!cell.widgets) {
+        cell.widgets = [];
+      }
+
+      // Create new widget
+      const newWidget: Widget = {
+        id: `widget-${Date.now()}`,
+        name: params.widgetName,
+        type: params.widgetType,
+        body: params.html ? { html: params.html } : undefined,
+        params: params.params || {},
+        styles: params.styles || {}
+      };
+
+      // Add widget to the end of the cell's widgets array
+      cell.widgets.push(newWidget);
+      const widgetIndex = cell.widgets.length - 1;
+
+      const widgetLocation: WidgetLocation = {
+        sectionName: params.location.sectionName,
+        rowIndex: params.location.rowIndex,
+        columnIndex: params.location.columnIndex,
+        widgetIndex
+      };
+
+      logger.info('Added new widget to page', { opId, widgetLocation, widgetId: newWidget.id });
+
+      // STEP 3: Validate structure
+      const validation = this.validatePageStructure(beforePage, updatedPage);
+
+      // For adding widgets, we expect widget count to increase by 1
+      if (validation.afterWidgetCount !== validation.beforeWidgetCount + 1) {
+        logger.warn('Unexpected widget count after adding widget', {
+          opId,
+          expected: validation.beforeWidgetCount + 1,
+          actual: validation.afterWidgetCount
+        });
+      }
+
+      if (!validation.isValid) {
+        return {
+          success: false,
+          error: {
+            status: 'VALIDATION_FAILED',
+            message: `Structure validation failed: ${validation.errors.join(', ')}`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      // STEP 4: PATCH to draft endpoint
+      const response = await this.request<Page>(
+        `/cms/v3/pages/${params.pageType}/${params.pageId}/draft`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(updatedPage)
+        }
+      );
+
+      if (!response.success) {
+        return {
+          success: false,
+          error: response.error,
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      logger.logOperation(
+        'add_widget',
+        { opId, pageId: params.pageId, widgetLocation },
+        beforePage,
+        response.data
+      );
+
+      return {
+        success: true,
+        data: {
+          page: response.data!,
+          validation,
+          widgetLocation
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    } catch (error) {
+      logger.error('Error adding widget', { opId, error });
+      return {
+        success: false,
+        error: {
+          status: 'ADD_WIDGET_FAILED',
+          message: `Failed to add widget: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          correlationId: String(opId)
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+  }
+
+  /**
+   * Remove a widget from a page
+   * CRITICAL: Uses complete fetch-first pattern
+   * Inputs: page_id, page_type, location
+   * Output: Updated page draft
+   * Implementation: Fetch → remove widget from array → validate → PATCH /draft
+   * Safety: Validates widget count decreased by exactly 1
+   */
+  async removeWidget(
+    params: WidgetRemoveParams
+  ): Promise<HubSpotResponse<{ page: Page; validation: StructuralValidation }>> {
+    const opId = logger.getNextOperationId();
+    logger.info('Starting remove widget operation', { opId, pageId: params.pageId, location: params.location });
+
+    // STEP 1: Fetch current state
+    const currentResponse = await this.getPage(params.pageId, params.pageType);
+    if (!currentResponse.success || !currentResponse.data) {
+      return {
+        success: false,
+        error: currentResponse.error,
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
+
+    const beforePage = JSON.parse(JSON.stringify(currentResponse.data));
+    const updatedPage = currentResponse.data;
+
+    // STEP 2: Navigate to widget and remove it
+    try {
+      const section = (updatedPage.layoutSections as any)[params.location.sectionName];
+      if (!section || !section.rows) {
+        return {
+          success: false,
+          error: {
+            status: 'SECTION_NOT_FOUND',
+            message: `Layout section "${params.location.sectionName}" not found`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      const row = section.rows[params.location.rowIndex];
+      if (!row || !row.cells) {
+        return {
+          success: false,
+          error: {
+            status: 'ROW_NOT_FOUND',
+            message: `Row ${params.location.rowIndex} not found`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      const cell = row.cells[params.location.columnIndex];
+      if (!cell || !cell.widgets) {
+        return {
+          success: false,
+          error: {
+            status: 'CELL_NOT_FOUND',
+            message: `Column ${params.location.columnIndex} not found`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      if (params.location.widgetIndex >= cell.widgets.length) {
+        return {
+          success: false,
+          error: {
+            status: 'WIDGET_NOT_FOUND',
+            message: `Widget index ${params.location.widgetIndex} out of bounds (total: ${cell.widgets.length})`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      // Remove the widget
+      const removedWidget = cell.widgets.splice(params.location.widgetIndex, 1)[0];
+      logger.info('Removed widget from page', { opId, widgetId: removedWidget.id });
+
+      // STEP 3: Validate structure
+      const validation = this.validatePageStructure(beforePage, updatedPage);
+
+      // For removing widgets, we expect widget count to decrease by 1
+      if (validation.afterWidgetCount !== validation.beforeWidgetCount - 1) {
+        logger.warn('Unexpected widget count after removing widget', {
+          opId,
+          expected: validation.beforeWidgetCount - 1,
+          actual: validation.afterWidgetCount
+        });
+      }
+
+      if (!validation.isValid) {
+        return {
+          success: false,
+          error: {
+            status: 'VALIDATION_FAILED',
+            message: `Structure validation failed: ${validation.errors.join(', ')}`,
+            correlationId: String(opId)
+          },
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      // STEP 4: PATCH to draft endpoint
+      const response = await this.request<Page>(
+        `/cms/v3/pages/${params.pageType}/${params.pageId}/draft`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(updatedPage)
+        }
+      );
+
+      if (!response.success) {
+        return {
+          success: false,
+          error: response.error,
+          rateLimitStatus: this.rateLimiter.getStatus()
+        };
+      }
+
+      logger.logOperation(
+        'remove_widget',
+        { opId, pageId: params.pageId, location: params.location },
+        beforePage,
+        response.data
+      );
+
+      return {
+        success: true,
+        data: {
+          page: response.data!,
+          validation
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    } catch (error) {
+      logger.error('Error removing widget', { opId, error });
+      return {
+        success: false,
+        error: {
+          status: 'REMOVE_WIDGET_FAILED',
+          message: `Failed to remove widget: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          correlationId: String(opId)
+        },
+        rateLimitStatus: this.rateLimiter.getStatus()
+      };
+    }
   }
 }
