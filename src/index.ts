@@ -493,6 +493,159 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['name', 'slug', 'templatePath']
         }
+      },
+      // Phase 5: Safe webpage content and appearance editing
+      {
+        name: 'hubspot_get_page_widgets',
+        description: 'Discover all widgets on a page with their locations and content previews. Returns a structured view showing layout sections, rows, columns, and widgets with their IDs, types, and content previews. Essential first step before any widget content editing - use this to identify which widget to modify. Safe read-only operation.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            }
+          },
+          required: ['pageId', 'pageType']
+        }
+      },
+      {
+        name: 'hubspot_update_widget_content',
+        description: 'Safely update HTML content, styles, or parameters of a specific widget on a page. Uses fetch-first pattern with structural validation to prevent data loss. CRITICAL SAFETY: Only modifies the targeted widget - all other page content is preserved. Changes go to DRAFT requiring explicit publish. Specify widget location using section name, row index, column index, and widget index from hubspot_get_page_widgets. Returns validation report and preview URL.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            },
+            sectionName: {
+              type: 'string',
+              description: 'Layout section name (e.g., "dnd_area") - get from hubspot_get_page_widgets'
+            },
+            rowIndex: {
+              type: 'number',
+              description: 'Row index (0-based) where the widget is located'
+            },
+            columnIndex: {
+              type: 'number',
+              description: 'Column/cell index (0-based) where the widget is located'
+            },
+            widgetIndex: {
+              type: 'number',
+              description: 'Widget index (0-based) within the cell'
+            },
+            html: {
+              type: 'string',
+              description: 'Optional: New HTML content for the widget body'
+            },
+            styles: {
+              type: 'object',
+              description: 'Optional: CSS styles to apply to widget (as JSON object)'
+            },
+            params: {
+              type: 'object',
+              description: 'Optional: Module parameters to update (as JSON object)'
+            }
+          },
+          required: ['pageId', 'pageType', 'sectionName', 'rowIndex', 'columnIndex', 'widgetIndex']
+        }
+      },
+      {
+        name: 'hubspot_add_widget_to_page',
+        description: 'Add a new widget to a specific location on a page. Uses fetch-first pattern with validation. Specify the layout section, row, and column where you want to add the widget. The new widget will be added at the end of that column\'s widgets array. Changes saved to DRAFT. IMPORTANT: Get available widget types from your HubSpot templates. Common types include "rich_text", "image", "button", "form", "video", "divider". Returns the new widget\'s location and validation report.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            },
+            sectionName: {
+              type: 'string',
+              description: 'Layout section name where widget will be added'
+            },
+            rowIndex: {
+              type: 'number',
+              description: 'Row index (0-based) where widget will be added'
+            },
+            columnIndex: {
+              type: 'number',
+              description: 'Column/cell index (0-based) where widget will be added'
+            },
+            widgetType: {
+              type: 'string',
+              description: 'Widget type (e.g., "rich_text", "image", "button")'
+            },
+            widgetName: {
+              type: 'string',
+              description: 'Display name for the widget'
+            },
+            html: {
+              type: 'string',
+              description: 'Optional: Initial HTML content for the widget'
+            },
+            params: {
+              type: 'object',
+              description: 'Optional: Module parameters (as JSON object)'
+            },
+            styles: {
+              type: 'object',
+              description: 'Optional: CSS styles (as JSON object)'
+            }
+          },
+          required: ['pageId', 'pageType', 'sectionName', 'rowIndex', 'columnIndex', 'widgetType', 'widgetName']
+        }
+      },
+      {
+        name: 'hubspot_remove_widget_from_page',
+        description: 'Remove a specific widget from a page. Uses fetch-first pattern with validation to ensure only the targeted widget is removed. CRITICAL: This permanently removes the widget from the draft. Get widget location from hubspot_get_page_widgets first. Changes saved to DRAFT requiring explicit publish. Use with caution - always review page structure before removing widgets.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pageId: {
+              type: 'string',
+              description: 'The ID of the page'
+            },
+            pageType: {
+              type: 'string',
+              enum: ['site-pages', 'landing-pages'],
+              description: 'Type of page (site-pages or landing-pages)'
+            },
+            sectionName: {
+              type: 'string',
+              description: 'Layout section name containing the widget'
+            },
+            rowIndex: {
+              type: 'number',
+              description: 'Row index (0-based) containing the widget'
+            },
+            columnIndex: {
+              type: 'number',
+              description: 'Column/cell index (0-based) containing the widget'
+            },
+            widgetIndex: {
+              type: 'number',
+              description: 'Widget index (0-based) to remove'
+            }
+          },
+          required: ['pageId', 'pageType', 'sectionName', 'rowIndex', 'columnIndex', 'widgetIndex']
+        }
       }
     ]
   };
@@ -1356,6 +1509,243 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 },
                 rateLimitStatus: result.rateLimitStatus,
                 message: `✓ Page created successfully in DRAFT state. Preview at: ${previewUrl || 'N/A'}. Use hubspot_publish_blog_post_draft to publish when ready (or publish through HubSpot UI).`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      // Phase 5: Safe webpage content and appearance editing
+      case 'hubspot_get_page_widgets': {
+        if (!toolArgs.pageId || !toolArgs.pageType) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId and pageType are required');
+        }
+
+        const result = await hubspotClient.getPageContentStructure(
+          toolArgs.pageId as string,
+          toolArgs.pageType as 'site-pages' | 'landing-pages'
+        );
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const structure = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: structure.pageId,
+                pageName: structure.pageName,
+                totalWidgets: structure.totalWidgets,
+                layoutSections: structure.layoutSections,
+                widgets: structure.widgets.map(w => ({
+                  id: w.id,
+                  name: w.name,
+                  type: w.type,
+                  location: w.location,
+                  hasHtmlContent: w.hasHtmlContent,
+                  hasStyles: w.hasStyles,
+                  hasParams: w.hasParams,
+                  contentPreview: w.contentPreview
+                })),
+                rateLimitStatus: result.rateLimitStatus,
+                message: `Found ${structure.totalWidgets} widget(s) across ${structure.layoutSections.length} layout section(s). Use the location information to target specific widgets for updates.`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_update_widget_content': {
+        if (!toolArgs.pageId || !toolArgs.pageType || !toolArgs.sectionName ||
+            toolArgs.rowIndex === undefined || toolArgs.columnIndex === undefined ||
+            toolArgs.widgetIndex === undefined) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId, pageType, sectionName, rowIndex, columnIndex, and widgetIndex are required');
+        }
+
+        if (!toolArgs.html && !toolArgs.styles && !toolArgs.params) {
+          throw new McpError(ErrorCode.InvalidParams, 'At least one of html, styles, or params must be provided');
+        }
+
+        const result = await hubspotClient.updateWidgetContent({
+          pageId: toolArgs.pageId as string,
+          pageType: toolArgs.pageType as 'site-pages' | 'landing-pages',
+          location: {
+            sectionName: toolArgs.sectionName as string,
+            rowIndex: toolArgs.rowIndex as number,
+            columnIndex: toolArgs.columnIndex as number,
+            widgetIndex: toolArgs.widgetIndex as number
+          },
+          html: toolArgs.html as string | undefined,
+          styles: toolArgs.styles as any,
+          params: toolArgs.params as any
+        });
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: data.page.id,
+                pageName: data.page.name,
+                previewUrl: data.previewUrl,
+                validation: {
+                  isValid: data.validation.isValid,
+                  widgetCountBefore: data.validation.beforeWidgetCount,
+                  widgetCountAfter: data.validation.afterWidgetCount,
+                  warnings: data.validation.warnings,
+                  errors: data.validation.errors
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Widget updated successfully. Structure validation: ${data.validation.isValid ? 'PASSED' : 'FAILED'}. ${data.validation.warnings.length > 0 ? `Warnings: ${data.validation.warnings.join(', ')}` : 'No warnings.'} Preview at: ${data.previewUrl || 'N/A'}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_add_widget_to_page': {
+        if (!toolArgs.pageId || !toolArgs.pageType || !toolArgs.sectionName ||
+            toolArgs.rowIndex === undefined || toolArgs.columnIndex === undefined ||
+            !toolArgs.widgetType || !toolArgs.widgetName) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId, pageType, sectionName, rowIndex, columnIndex, widgetType, and widgetName are required');
+        }
+
+        const result = await hubspotClient.addWidget({
+          pageId: toolArgs.pageId as string,
+          pageType: toolArgs.pageType as 'site-pages' | 'landing-pages',
+          location: {
+            sectionName: toolArgs.sectionName as string,
+            rowIndex: toolArgs.rowIndex as number,
+            columnIndex: toolArgs.columnIndex as number
+          },
+          widgetType: toolArgs.widgetType as string,
+          widgetName: toolArgs.widgetName as string,
+          html: toolArgs.html as string | undefined,
+          params: toolArgs.params as any,
+          styles: toolArgs.styles as any
+        });
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: data.page.id,
+                widgetLocation: data.widgetLocation,
+                validation: {
+                  isValid: data.validation.isValid,
+                  widgetCountBefore: data.validation.beforeWidgetCount,
+                  widgetCountAfter: data.validation.afterWidgetCount,
+                  warnings: data.validation.warnings,
+                  errors: data.validation.errors
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Widget added successfully at section="${data.widgetLocation.sectionName}", row=${data.widgetLocation.rowIndex}, column=${data.widgetLocation.columnIndex}, widget=${data.widgetLocation.widgetIndex}. Widget count: ${data.validation.beforeWidgetCount} → ${data.validation.afterWidgetCount}`
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_remove_widget_from_page': {
+        if (!toolArgs.pageId || !toolArgs.pageType || !toolArgs.sectionName ||
+            toolArgs.rowIndex === undefined || toolArgs.columnIndex === undefined ||
+            toolArgs.widgetIndex === undefined) {
+          throw new McpError(ErrorCode.InvalidParams, 'pageId, pageType, sectionName, rowIndex, columnIndex, and widgetIndex are required');
+        }
+
+        const result = await hubspotClient.removeWidget({
+          pageId: toolArgs.pageId as string,
+          pageType: toolArgs.pageType as 'site-pages' | 'landing-pages',
+          location: {
+            sectionName: toolArgs.sectionName as string,
+            rowIndex: toolArgs.rowIndex as number,
+            columnIndex: toolArgs.columnIndex as number,
+            widgetIndex: toolArgs.widgetIndex as number
+          }
+        });
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                pageId: data.page.id,
+                validation: {
+                  isValid: data.validation.isValid,
+                  widgetCountBefore: data.validation.beforeWidgetCount,
+                  widgetCountAfter: data.validation.afterWidgetCount,
+                  warnings: data.validation.warnings,
+                  errors: data.validation.errors
+                },
+                rateLimitStatus: result.rateLimitStatus,
+                message: `✓ Widget removed successfully. Widget count: ${data.validation.beforeWidgetCount} → ${data.validation.afterWidgetCount}. Validation: ${data.validation.isValid ? 'PASSED' : 'FAILED'}`
               }, null, 2)
             }
           ]

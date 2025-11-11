@@ -236,3 +236,95 @@ export interface PageCreateParams {
   htmlTitle?: string;  // HTML title tag
   metaDescription?: string;  // Meta description
 }
+
+// Phase 5: Safe webpage content and appearance editing types
+
+export interface Widget {
+  id: string;
+  name: string;
+  type: string;
+  body?: {
+    html?: string;
+    [key: string]: any;
+  };
+  params?: {
+    [key: string]: any;
+  };
+  styles?: {
+    [key: string]: any;
+  };
+  [key: string]: any;
+}
+
+export interface WidgetLocation {
+  sectionName: string;  // e.g., "dnd_area"
+  rowIndex: number;
+  columnIndex: number;
+  widgetIndex: number;
+}
+
+export interface PageContentStructure {
+  pageId: string;
+  pageName: string;
+  widgets: Array<{
+    id: string;
+    name: string;
+    type: string;
+    location: WidgetLocation;
+    hasHtmlContent: boolean;
+    hasStyles: boolean;
+    hasParams: boolean;
+    contentPreview?: string;
+  }>;
+  layoutSections: string[];  // Names of layout sections in the page
+  totalWidgets: number;
+}
+
+export interface WidgetUpdateParams {
+  pageId: string;
+  pageType: 'site-pages' | 'landing-pages';
+  location: WidgetLocation;
+  html?: string;  // Update HTML content
+  styles?: { [key: string]: any };  // Update styles
+  params?: { [key: string]: any };  // Update module parameters
+}
+
+export interface WidgetAddParams {
+  pageId: string;
+  pageType: 'site-pages' | 'landing-pages';
+  location: Omit<WidgetLocation, 'widgetIndex'>;  // Don't need widgetIndex for adding
+  widgetType: string;
+  widgetName: string;
+  html?: string;
+  params?: { [key: string]: any };
+  styles?: { [key: string]: any };
+}
+
+export interface WidgetRemoveParams {
+  pageId: string;
+  pageType: 'site-pages' | 'landing-pages';
+  location: WidgetLocation;
+}
+
+export interface WidgetReorderParams {
+  pageId: string;
+  pageType: 'site-pages' | 'landing-pages';
+  fromLocation: WidgetLocation;
+  toLocation: WidgetLocation;
+}
+
+export interface PageContentUpdate {
+  widgets?: any;
+  widgetContainers?: any;
+  layoutSections?: any;
+}
+
+export interface StructuralValidation {
+  isValid: boolean;
+  beforeWidgetCount: number;
+  afterWidgetCount: number;
+  beforeSectionCount: number;
+  afterSectionCount: number;
+  warnings: string[];
+  errors: string[];
+}

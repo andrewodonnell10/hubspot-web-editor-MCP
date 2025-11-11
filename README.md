@@ -450,11 +450,268 @@ MIT
 
 For issues or questions, please contact Core Wrk technical team or file an issue in the repository.
 
+## Phase 5 Tools (Safe Webpage Content Editing)
+
+### 1. hubspot_get_page_widgets
+
+Discover all widgets on a page with their locations and content previews.
+
+**Purpose**: Essential first step before widget editing - provides complete inventory of page structure.
+
+**Inputs**:
+- `pageId` (string, required): The page ID
+- `pageType` (string, required): "site-pages" or "landing-pages"
+
+**Outputs**:
+- Complete page widget structure
+- Widget locations (section, row, column, widget indices)
+- Content previews for each widget
+- Widget types and capabilities
+
+**Safety**: Read-only operation, safe to call anytime.
+
+**Example**:
+```json
+{
+  "success": true,
+  "pageId": "123456",
+  "pageName": "Homepage",
+  "totalWidgets": 8,
+  "layoutSections": ["dnd_area", "header"],
+  "widgets": [
+    {
+      "id": "widget-1",
+      "name": "Hero Section",
+      "type": "rich_text",
+      "location": {
+        "sectionName": "dnd_area",
+        "rowIndex": 0,
+        "columnIndex": 0,
+        "widgetIndex": 0
+      },
+      "hasHtmlContent": true,
+      "hasStyles": true,
+      "hasParams": false,
+      "contentPreview": "Welcome to our website..."
+    }
+  ]
+}
+```
+
+### 2. hubspot_update_widget_content
+
+Safely update HTML content, styles, or parameters of a specific widget.
+
+**Purpose**: Modify individual widget content or appearance without touching other page elements.
+
+**Safety Guarantees**:
+- Implements fetch-first pattern automatically
+- Structural validation ensures no widgets are lost
+- Only modifies targeted widget
+- All changes go to draft state
+- Returns validation report
+
+**Inputs**:
+- `pageId` (string, required): The page ID
+- `pageType` (string, required): "site-pages" or "landing-pages"
+- `sectionName` (string, required): Layout section name
+- `rowIndex` (number, required): Row index (0-based)
+- `columnIndex` (number, required): Column index (0-based)
+- `widgetIndex` (number, required): Widget index (0-based)
+- `html` (string, optional): New HTML content
+- `styles` (object, optional): CSS styles to apply
+- `params` (object, optional): Module parameters to update
+
+**Outputs**:
+- Updated page details
+- Structural validation report
+- Preview URL
+- Before/after widget counts
+
+**Example**:
+```json
+{
+  "success": true,
+  "pageId": "123456",
+  "previewUrl": "https://example.com/page?hs_preview=draft",
+  "validation": {
+    "isValid": true,
+    "widgetCountBefore": 8,
+    "widgetCountAfter": 8,
+    "warnings": [],
+    "errors": []
+  },
+  "message": "✓ Widget updated successfully. Structure validation: PASSED."
+}
+```
+
+### 3. hubspot_add_widget_to_page
+
+Add a new widget to a specific location on a page.
+
+**Purpose**: Programmatically add new content sections, images, buttons, etc. to pages.
+
+**Safety Guarantees**:
+- Fetch-first pattern with validation
+- Validates widget count increased by exactly 1
+- All changes go to draft state
+- Returns new widget location
+
+**Inputs**:
+- `pageId` (string, required): The page ID
+- `pageType` (string, required): "site-pages" or "landing-pages"
+- `sectionName` (string, required): Layout section name
+- `rowIndex` (number, required): Row index (0-based)
+- `columnIndex` (number, required): Column index (0-based)
+- `widgetType` (string, required): Widget type (e.g., "rich_text", "image", "button")
+- `widgetName` (string, required): Display name for widget
+- `html` (string, optional): Initial HTML content
+- `params` (object, optional): Module parameters
+- `styles` (object, optional): CSS styles
+
+**Outputs**:
+- New widget location
+- Validation report
+- Widget count before/after
+
+**Example**:
+```json
+{
+  "success": true,
+  "pageId": "123456",
+  "widgetLocation": {
+    "sectionName": "dnd_area",
+    "rowIndex": 1,
+    "columnIndex": 0,
+    "widgetIndex": 2
+  },
+  "validation": {
+    "widgetCountBefore": 8,
+    "widgetCountAfter": 9
+  },
+  "message": "✓ Widget added successfully..."
+}
+```
+
+### 4. hubspot_remove_widget_from_page
+
+Remove a specific widget from a page.
+
+**Purpose**: Clean up unwanted content sections.
+
+**⚠️ Warning**: This permanently removes the widget from the draft (not immediately live).
+
+**Safety Guarantees**:
+- Fetch-first pattern with validation
+- Validates widget count decreased by exactly 1
+- Changes go to draft requiring publish
+- Preserves all other widgets
+
+**Inputs**:
+- `pageId` (string, required): The page ID
+- `pageType` (string, required): "site-pages" or "landing-pages"
+- `sectionName` (string, required): Layout section name
+- `rowIndex` (number, required): Row index (0-based)
+- `columnIndex` (number, required): Column index (0-based)
+- `widgetIndex` (number, required): Widget index (0-based)
+
+**Outputs**:
+- Validation report
+- Widget count before/after
+
+**Example**:
+```json
+{
+  "success": true,
+  "pageId": "123456",
+  "validation": {
+    "isValid": true,
+    "widgetCountBefore": 9,
+    "widgetCountAfter": 8
+  },
+  "message": "✓ Widget removed successfully..."
+}
+```
+
+## Phase 5 Workflow Examples
+
+### Updating Hero Section Text
+
+```
+1. Get page widget structure: hubspot_get_page_widgets
+2. Identify hero widget location from results
+3. Update widget HTML: hubspot_update_widget_content with new HTML
+4. Review preview URL
+5. Publish when ready: hubspot_publish_blog_post_draft (works for pages too)
+```
+
+### Adding a Call-to-Action Button
+
+```
+1. Get page structure to find where to add: hubspot_get_page_widgets
+2. Add button widget: hubspot_add_widget_to_page with widgetType="button"
+3. Update button HTML and styles if needed: hubspot_update_widget_content
+4. Review and publish
+```
+
+### Changing Widget Styles
+
+```
+1. Get page structure: hubspot_get_page_widgets
+2. Update widget styles: hubspot_update_widget_content with styles object
+   Example styles: {"backgroundColor": "#003366", "padding": "20px"}
+3. Preview changes
+4. Publish
+```
+
+## Safety Features (Phase 5)
+
+### Structural Validation
+
+Every widget operation includes automatic validation:
+- **Widget count tracking**: Ensures widgets aren't accidentally deleted
+- **Section integrity**: Verifies all layout sections are preserved
+- **Before/after comparison**: Detailed report of what changed
+- **Warning system**: Alerts about unexpected changes
+- **Error prevention**: Operations fail safely if structure is compromised
+
+### Fetch-First Pattern
+
+All Phase 5 operations automatically:
+1. Fetch complete current page state
+2. Make targeted modification to specific widget
+3. Validate complete structure is intact
+4. PATCH complete page object to /draft endpoint
+5. Return validation report
+
+This prevents the catastrophic data loss that can occur from partial updates.
+
+### Draft-First Workflow
+
+- All widget modifications target draft endpoint
+- No live content is ever modified directly
+- Preview URLs generated for all changes
+- Explicit publish required to go live
+- Can discard changes with draft reset
+
+### Location-Based Addressing
+
+Rather than manipulating raw JSON, Phase 5 uses:
+- **Section name**: e.g., "dnd_area"
+- **Row index**: Which row in the section
+- **Column index**: Which column in the row
+- **Widget index**: Which widget in the column
+
+This makes operations more intuitive and less error-prone.
+
 ## Roadmap
 
-**Phase 1 (Current)**: Blog post management with metadata updates
+**Phase 1 (Complete)**: Blog post management with metadata updates
 
-**Future Phases**:
-- Phase 2: Page management and layout modifications
-- Phase 3: File operations and media management
-- Phase 4: Advanced features (templates, modules, themes)
+**Phase 2 (Complete)**: Content creation and file management
+
+**Phase 3 (Complete)**: Page management and advanced features
+
+**Phase 4**: Reserved for future enhancements (templates, modules, themes)
+
+**Phase 5 (Current)**: Safe webpage content and appearance editing
