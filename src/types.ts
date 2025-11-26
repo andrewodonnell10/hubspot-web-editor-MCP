@@ -168,6 +168,32 @@ export interface BlogTag {
   updated?: string;
 }
 
+export interface Blog {
+  id: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  absoluteUrl?: string;
+  created?: string;
+  updated?: string;
+  publicAccessRulesEnabled?: boolean;
+  publicAccessRules?: any[];
+  language?: string;
+  htmlTitle?: string;
+  enableGoogleAmpOutput?: boolean;
+  itemLayoutId?: string;
+  itemTemplateIsShared?: boolean;
+}
+
+export interface BlogListParams {
+  limit?: number;
+  offset?: number;
+  name?: string;
+  created?: string;
+  updated?: string;
+  archived?: boolean;
+}
+
 export interface PreviewUrlParams {
   contentId: string;
   contentType: 'blog-post' | 'site-page' | 'landing-page';
