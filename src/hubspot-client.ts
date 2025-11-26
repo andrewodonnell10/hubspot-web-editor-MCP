@@ -17,6 +17,8 @@ import {
   FileUploadParams,
   FileUploadResponse,
   BlogTag,
+  Blog,
+  BlogListParams,
   PreviewUrlParams,
   Page,
   PageListParams,
@@ -612,6 +614,34 @@ export class HubSpotClient {
     logger.info('Fetching blog tags', { searchTerm });
 
     return this.request<PaginatedResponse<BlogTag>>(endpoint, { method: 'GET' });
+  }
+
+  /**
+   * List blogs (content groups) with optional filtering
+   * Inputs: name (optional search), limit, offset, created, updated, archived
+   * Output: Array of blogs with id, name, slug, description, absoluteUrl
+   * Implementation: GET /cms/v3/blogs/blogs
+   * Purpose: Discover available blogs for publishing blog posts
+   */
+  async listBlogs(params: BlogListParams = {}): Promise<HubSpotResponse<PaginatedResponse<Blog>>> {
+    const queryParams = new URLSearchParams();
+
+    // Add pagination
+    if (params.limit) queryParams.set('limit', Math.min(params.limit, 100).toString());
+    if (params.offset) queryParams.set('offset', params.offset.toString());
+
+    // Add filters
+    if (params.name) queryParams.set('name__icontains', params.name);
+    if (params.created) queryParams.set('created__gt', params.created);
+    if (params.updated) queryParams.set('updated__gt', params.updated);
+    if (params.archived !== undefined) {
+      queryParams.set('archived', params.archived.toString());
+    }
+
+    const endpoint = `/cms/v3/blogs/blogs?${queryParams.toString()}`;
+    logger.info('Fetching blogs', { params });
+
+    return this.request<PaginatedResponse<Blog>>(endpoint, { method: 'GET' });
   }
 
   /**

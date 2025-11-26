@@ -20,7 +20,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { HubSpotClient } from './hubspot-client.js';
-import { HubSpotConfig, BlogPostListParams, BlogPostUpdateMetadata, PublishOptions } from './types.js';
+import { HubSpotConfig, BlogPostListParams, BlogListParams, BlogPostUpdateMetadata, PublishOptions } from './types.js';
 import { logger } from './logger.js';
 
 // Validate environment configuration
@@ -124,6 +124,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             }
           },
           required: ['postId']
+        }
+      },
+      {
+        name: 'hubspot_list_blogs',
+        description: 'List all available blogs (content groups) in your HubSpot account. Returns blog IDs, names, slugs, and URLs. Use this to discover which blogs are available before creating blog posts. The blog ID (contentGroupId) can be used when creating new blog posts to specify which blog they should be published to.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: {
+              type: 'number',
+              description: 'Maximum number of results to return (max 100)',
+              default: 20
+            },
+            offset: {
+              type: 'number',
+              description: 'Number of results to skip for pagination',
+              default: 0
+            },
+            name: {
+              type: 'string',
+              description: 'Filter by blog name (partial match supported)'
+            },
+            created: {
+              type: 'string',
+              description: 'Filter blogs created after this date (ISO 8601 format)'
+            },
+            updated: {
+              type: 'string',
+              description: 'Filter blogs updated after this date (ISO 8601 format)'
+            },
+            archived: {
+              type: 'boolean',
+              description: 'Filter by archived status'
+            }
+          }
         }
       },
       {
@@ -833,6 +868,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 },
                 rateLimitStatus: result.rateLimitStatus,
                 message: 'Blog post retrieved successfully.'
+              }, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'hubspot_list_blogs': {
+        const params: BlogListParams = {
+          limit: toolArgs.limit as number | undefined,
+          offset: toolArgs.offset as number | undefined,
+          name: toolArgs.name as string | undefined,
+          created: toolArgs.created as string | undefined,
+          updated: toolArgs.updated as string | undefined,
+          archived: toolArgs.archived as boolean | undefined
+        };
+
+        const result = await hubspotClient.listBlogs(params);
+
+        if (!result.success) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  rateLimitStatus: result.rateLimitStatus
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        const data = result.data!;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                total: data.total,
+                count: data.results.length,
+                offset: params.offset || 0,
+                limit: params.limit || 20,
+                blogs: data.results.map(blog => ({
+                  id: blog.id,
+                  name: blog.name,
+                  slug: blog.slug,
+                  description: blog.description,
+                  absoluteUrl: blog.absoluteUrl,
+                  created: blog.created,
+                  updated: blog.updated,
+                  language: blog.language
+                })),
+                rateLimitStatus: result.rateLimitStatus,
+                message: `Found ${data.total} blog(s) matching criteria. Use the blog ID (id field) as contentGroupId when creating blog posts.`
               }, null, 2)
             }
           ]
